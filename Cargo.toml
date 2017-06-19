@@ -1,0 +1,15 @@
+[package]
+name = "cfg-specialize"
+version = "0.1.0"
+authors = ["Alex Crichton <alex@alexcrichton.com>"]
+
+[dependencies]
+cfg-specialize-macros = { path = "cfg-specialize-macros" }
+
+[dev-dependencies]
+stdsimd = { git = 'https://github.com/BurntSushi/stdsimd' }
+
+[target.'cfg(target_arch = "x86")'.dependencies]
+cupid = "0.3"
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+cupid = "0.3"
