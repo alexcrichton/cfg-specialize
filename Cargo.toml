@@ -7,7 +7,7 @@ authors = ["Alex Crichton <alex@alexcrichton.com>"]
 cfg-specialize-macros = { path = "cfg-specialize-macros" }
 
 [dev-dependencies]
-stdsimd = { git = 'https://github.com/BurntSushi/stdsimd' }
+stdsimd = { path = "../stdsimd" }
 
 [target.'cfg(target_arch = "x86")'.dependencies]
 cupid = "0.3"

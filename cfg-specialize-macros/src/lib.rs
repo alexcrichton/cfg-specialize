@@ -15,6 +15,7 @@ use quote::{Tokens, ToTokens};
 
 struct Feature {
     name: &'static str,
+    check: &'static str,
     arch: &'static [&'static str],
 }
 
@@ -51,6 +52,11 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     if variadic {
         panic!("the #[cfg_specialize] attribute cannot be applied to \
                 variadic functions");
+    }
+
+    if let Constness::Const(_) = constness {
+        panic!("the #[cfg_specialize] attribute cannot be applied to \
+                const functions");
     }
 
     // We use a `static` below for dispatching this function, and there's only
@@ -149,6 +155,15 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         }
     }
 
+    if generics.lifetimes.len() > 0 {
+        fnty.lifetimes = Some(BoundLifetimes {
+            for_token: Default::default(),
+            lt_token: Default::default(),
+            lifetimes: generics.lifetimes.clone(),
+            gt_token: Default::default(),
+        });
+    }
+
     // For each of the #[cfg] listed inside of the `#[cfg_specialize]`
     // attribute we want to generate a unique function.
     //
@@ -167,7 +182,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         // This'll be the name of the function, which is the same as the name
         // of the original function but suffixed with our feature name, e.g.
         // `foo_avx`.
-        let ident = Ident::from(&format!("{}_{}", ident, feature.name)[..]);
+        let ident = Ident::from(&format!("__{}_{}", ident, feature.check)[..]);
 
         // This is the string we'll pass to the `target_feature` attribute,
         // which enables the feature via `target_feature = "+feature"`
@@ -196,11 +211,11 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         functions.push(quote! {
             #[target_feature = #feature_enable]
             #cfg
-            #unsafety #constness
+            #unsafety
             fn #ident #generics(#inputs) -> #output #where_clause
                 #body
         });
-        checker.push(Ident::from(&format!("check_{}", feature.name)[..]));
+        checker.push(Ident::from(&format!("check_{}", feature.check)[..]));
         checker_impl.push(ident);
         checker_cfg.push(cfg);
     }
@@ -208,21 +223,21 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     // Generate the default fallback which is the same as above, but without
     // any `#[target_feature]` attribute. We'll dispatch to this one if nothing
     // else hits.
-    let default = Ident::from(&format!("{}_default", ident)[..]);
+    let default = Ident::from(&format!("__{}_default", ident)[..]);
     functions.push(quote! {
-        #unsafety #constness
+        #unsafety
         fn #default #generics(#inputs) -> #output #where_clause
             #block
     });
 
-    let fnty = Ty::BareFn(TyBareFn { ty: Box::new(fnty) });
+    let fnty = AlterLifetimes.fold_ty(Ty::BareFn(TyBareFn { ty: Box::new(fnty) }));
     let functions = ToTokensAll(&functions);
     let temp_bindings = &temp_bindings;
     let attrs = ToTokensAll(&attrs);
     let inputs_no_patterns = &inputs_no_patterns;
     let function = quote! {
         #attrs
-        #vis #unsafety #abi #constness
+        #vis #unsafety #abi
         fn #ident #generics(#(#inputs_no_patterns),*) -> #output
             #where_clause
         {
@@ -231,7 +246,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
 
             // We initially resolve to a dispatching function, and this'll get
             // filled in later with the actual function we resolve to.
-            static mut WHICH: #fnty = dispatch;
+            static mut WHICH: #fnty = __dispatch;
 
             return unsafe {
                 let slot = &*(&WHICH as *const _ as *const AtomicUsize);
@@ -239,7 +254,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
                 mem::transmute::<usize, #fnty>(function)(#(#temp_bindings),*)
             };
 
-            fn dispatch(#(#inputs_no_patterns),*) -> #output {
+            fn __dispatch #generics (#(#inputs_no_patterns),*) -> #output {
                 extern crate cfg_specialize;
                 unsafe {
                     // Start out selecting our default fallback, and then
@@ -306,8 +321,10 @@ fn parse_cfg(cfg: TokenStream) -> &'static Feature {
     // TODO: implement this
     static X86: [&str; 2] = ["x86", "x86_64"];
     static FEATURES: &[Feature] = &[
-        Feature { name: "avx", arch: &X86 },
-        Feature { name: "ssse3", arch: &X86 },
+        Feature { name: "avx", check: "avx", arch: &X86 },
+        Feature { name: "sse2", check: "sse2", arch: &X86 },
+        Feature { name: "ssse3", check: "ssse3", arch: &X86 },
+        Feature { name: "sse4.1", check: "sse41", arch: &X86 },
     ];
     let name = match feature_from_stream(cfg.into()) {
         Some(feature) => feature,
@@ -372,6 +389,17 @@ impl<'a> Folder for FulfillFeature<'a> {
             TokenTree(token)
         }).collect();
         return mac
+    }
+}
+
+struct AlterLifetimes;
+
+impl Folder for AlterLifetimes {
+    fn fold_lifetime(&mut self, lt: Lifetime) -> Lifetime {
+        Lifetime {
+            sym: format!("{}_guh", lt).into(),
+            span: lt.span,
+        }
     }
 }
 
