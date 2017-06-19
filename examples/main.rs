@@ -50,10 +50,10 @@ fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
 {
     use stdsimd::*;
 
-	let ascii_zero = u8x16::splat(b'0').as_i8x16();
-	let nines = i8x16::splat(9);
-	let ascii_a = u8x16::splat(b'a' - 9 - 1).as_i8x16();
-	let and4bits = i8x16::splat(0xf);
+    let ascii_zero = u8x16::splat(b'0').as_i8x16();
+    let nines = i8x16::splat(9);
+    let ascii_a = u8x16::splat(b'a' - 9 - 1).as_i8x16();
+    let and4bits = i8x16::splat(0xf);
 
     let mut i = 0;
     while src.len() > 16 {
@@ -78,7 +78,7 @@ fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
         res2.as_u8x16().store(dst, i * 2 + 16);
         src = &src[16..];
         i += 16;
-	}
+    }
 
     drop(hex_encode_slow(src, &mut dst[i * 2..]));
 
