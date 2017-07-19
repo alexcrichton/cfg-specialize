@@ -8,7 +8,7 @@ extern crate quote;
 extern crate syn;
 
 use proc_macro::TokenStream;
-use proc_macro2::{Delimiter, TokenKind, Literal};
+use proc_macro2::{Delimiter, TokenNode, Literal, Term};
 use syn::*;
 use syn::fold::Folder;
 use quote::{Tokens, ToTokens};
@@ -29,8 +29,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         }
     };
 
-    let function = proc_macro2::TokenStream::from(function);
-    let Item { attrs, node } = function.clone().into();
+    let Item { attrs, node } = syn::parse(function).unwrap();
     let ItemFn {
         ident,
         vis,
@@ -187,7 +186,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         // This is the string we'll pass to the `target_feature` attribute,
         // which enables the feature via `target_feature = "+feature"`
         let feature_enable = Lit {
-            value: LitKind::Other(Literal::from(&format!("+{}", feature.name)[..])),
+            value: LitKind::Other(Literal::string(&format!("+{}", feature.name)[..])),
             span: Span::default(),
         };
 
@@ -297,7 +296,7 @@ fn get_cfgs(attribute: TokenStream) -> Option<Vec<TokenStream>> {
         return None
     }
     let stream = match tokens.remove(0).kind {
-        TokenKind::Sequence(Delimiter::Parenthesis, stream) => stream,
+        TokenNode::Group(Delimiter::Parenthesis, stream) => stream,
         _ => return None
     };
 
@@ -305,7 +304,7 @@ fn get_cfgs(attribute: TokenStream) -> Option<Vec<TokenStream>> {
     let mut cur = Vec::new();
     for token in stream {
         match token.kind {
-            TokenKind::Op(',', _) => {
+            TokenNode::Op(',', _) => {
                 ret.push(TokenStream::from(cur.into_iter().collect::<proc_macro2::TokenStream>()));
                 cur = Vec::new();
             }
@@ -322,6 +321,7 @@ fn parse_cfg(cfg: TokenStream) -> &'static Feature {
     static X86: [&str; 2] = ["x86", "x86_64"];
     static FEATURES: &[Feature] = &[
         Feature { name: "avx", check: "avx", arch: &X86 },
+        Feature { name: "avx2", check: "avx2", arch: &X86 },
         Feature { name: "sse2", check: "sse2", arch: &X86 },
         Feature { name: "ssse3", check: "ssse3", arch: &X86 },
         Feature { name: "sse4.1", check: "sse41", arch: &X86 },
@@ -375,7 +375,7 @@ impl<'a> Folder for FulfillFeature<'a> {
         }
 
         let stream = match mac.tokens[0].0.kind {
-            TokenKind::Sequence(Delimiter::Parenthesis, ref stream) => stream.clone(),
+            TokenNode::Group(Delimiter::Parenthesis, ref stream) => stream.clone(),
             _ => return mac.clone(),
         };
         match feature_from_stream(stream) {
@@ -397,7 +397,7 @@ struct AlterLifetimes;
 impl Folder for AlterLifetimes {
     fn fold_lifetime(&mut self, lt: Lifetime) -> Lifetime {
         Lifetime {
-            sym: format!("{}_guh", lt).into(),
+            sym: Term::intern(&format!("{}_guh", lt)),
             span: lt.span,
         }
     }
@@ -410,15 +410,15 @@ fn feature_from_stream(stream: proc_macro2::TokenStream) -> Option<String> {
     }
 
     match tokens[0].kind {
-        TokenKind::Word(s) if s.as_str() == "target_feature" => {}
+        TokenNode::Term(s) if s.as_str() == "target_feature" => {}
         _ => return None,
     }
     match tokens[1].kind {
-        TokenKind::Op('=', _) => {}
+        TokenNode::Op('=', _) => {}
         _ => return None,
     }
     let mut literal = match tokens[2].kind {
-        TokenKind::Literal(ref l) => l.to_string(),
+        TokenNode::Literal(ref l) => l.to_string(),
         _ => return None,
     };
     // remove quotes

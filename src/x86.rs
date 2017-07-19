@@ -10,6 +10,7 @@ macro_rules! checker {
 
 checker! {
     (check_avx, avx),
+    (check_avx2, avx2),
     (check_ssse3, ssse3),
     (check_sse2, sse2),
     (check_sse41, sse4_1),
