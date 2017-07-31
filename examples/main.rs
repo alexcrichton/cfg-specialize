@@ -48,7 +48,8 @@ fn hex_encode<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> {
 fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
     -> Result<&'a str, usize>
 {
-    use stdsimd::*;
+    use stdsimd::simd::*;
+    use stdsimd::vendor::*;
 
     let ascii_zero = u8x16::splat(b'0').as_i8x16();
     let nines = i8x16::splat(9);
