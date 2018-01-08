@@ -8,9 +8,9 @@ extern crate quote;
 extern crate syn;
 
 use proc_macro::TokenStream;
-use proc_macro2::{Delimiter, TokenNode, Literal, Term};
+use proc_macro2::{Delimiter, TokenNode, Term, Span};
 use syn::*;
-use syn::fold::Folder;
+use syn::fold::Fold;
 use quote::{Tokens, ToTokens};
 
 struct Feature {
@@ -29,7 +29,6 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         }
     };
 
-    let Item { attrs, node } = syn::parse(function).unwrap();
     let ItemFn {
         ident,
         vis,
@@ -38,9 +37,10 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         abi,
         block,
         decl,
+        attrs,
         ..
-    } = match node {
-        ItemKind::Fn(item) => item,
+    } = match syn::parse::<syn::Item>(function).unwrap() {
+        Item::Fn(item) => item,
         _ => panic!("#[cfg_specialize] can only be applied to functions"),
     };
 
@@ -48,32 +48,24 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     let ref inputs = inputs;
     let where_clause = &generics.where_clause;
 
-    if variadic {
+    if variadic.is_some() {
         panic!("the #[cfg_specialize] attribute cannot be applied to \
                 variadic functions");
     }
 
-    if let Constness::Const(_) = constness {
+    if constness.is_some() {
         panic!("the #[cfg_specialize] attribute cannot be applied to \
                 const functions");
     }
 
-    // We use a `static` below for dispatching this function, and there's only
-    // one static per function, so we can't support generics.
-    if generics.ty_params.len() > 0 {
-        panic!("the #[cfg_specialize] attribute cannot be applied to \
-                generic functions");
-    }
-
     let ref inputs = inputs;
     let output = match output {
-        FunctionRetTy::Ty(t, _) => t,
-        FunctionRetTy::Default => {
-            TyTup {
-                tys: Default::default(),
-                lone_comma: Default::default(),
+        ReturnType::Type(_, t) => t,
+        ReturnType::Default => {
+            Box::new(TypeTuple {
+                elems: Default::default(),
                 paren_token: Default::default(),
-            }.into()
+            }.into())
         }
     };
 
@@ -102,7 +94,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     let mut inputs_no_patterns = Vec::new();
     let mut patterns = Vec::new();
     let mut temp_bindings = Vec::new();
-    let mut fnty = BareFnTy {
+    let mut fnty = TypeBareFn {
         lifetimes: None,
         unsafety: unsafety.clone(),
         abi: None,
@@ -110,11 +102,9 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         paren_token: Default::default(),
         inputs: Default::default(),
         variadic: None,
-        output: FunctionRetTy::Ty(output.clone(), Default::default()),
+        output: ReturnType::Type(Default::default(), output.clone()),
     };
     for (i, input) in inputs.iter().enumerate() {
-        let input = *input.item();
-
         if let FnArg::Captured(ref arg) = *input {
             if let Pat::Ident(PatIdent { ref ident, ..}) = arg.pat {
                 if ident == "self" {
@@ -131,9 +121,9 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
                 let ident = Ident::from(format!("__arg_{}", i));
                 temp_bindings.push(ident.clone());
                 let pat = PatIdent {
-                    mode: BindingMode::ByValue(Mutability::Immutable),
+                    by_ref: None,
+                    mutability: None,
                     ident: ident,
-                    at_token: None,
                     subpat: None,
                 };
                 inputs_no_patterns.push(FnArg::Captured(ArgCaptured {
@@ -141,7 +131,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
                     ty: ty.clone(),
                     colon_token: Default::default(),
                 }));
-                fnty.inputs.push_default(BareFnArg {
+                fnty.inputs.push(BareFnArg {
                     name: None,
                     ty: ty.clone(),
                 });
@@ -154,11 +144,31 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         }
     }
 
-    if generics.lifetimes.len() > 0 {
+    // We use a `static` below for dispatching this function, and there's only
+    // one static per function, so we can't support generics.
+    if generics.params.len() > 0 {
+    }
+    let mut lifetimes = punctuated::Punctuated::new();
+    for param in generics.params.iter() {
+        match *param {
+            GenericParam::Type(_) =>  {
+                panic!("the #[cfg_specialize] attribute cannot be applied to \
+                        generic functions");
+            }
+            GenericParam::Lifetime(ref l) => {
+                lifetimes.push(l.clone());
+            }
+            GenericParam::Const(_) => {
+                panic!("the #[cfg_specialize] attribute cannot be applied to \
+                        functions with constant parameters");
+            }
+        }
+    }
+    if lifetimes.len() > 0 {
         fnty.lifetimes = Some(BoundLifetimes {
             for_token: Default::default(),
             lt_token: Default::default(),
-            lifetimes: generics.lifetimes.clone(),
+            lifetimes,
             gt_token: Default::default(),
         });
     }
@@ -185,10 +195,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
 
         // This is the string we'll pass to the `target_feature` attribute,
         // which enables the feature via `target_feature = "+feature"`
-        let feature_enable = Lit {
-            value: LitKind::Other(Literal::string(&format!("+{}", feature.name)[..])),
-            span: Span::default(),
-        };
+        let feature_enable = LitStr::new(&format!("+{}", feature.name), Span::def_site());
 
         // Get rid of `cfg!(target_feature = ...)` by replacing it with `true`
         // where we can. Maybe one day this'll be fixed in the compiler and we
@@ -229,12 +236,12 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
             #block
     });
 
-    let fnty = AlterLifetimes.fold_ty(Ty::BareFn(TyBareFn { ty: Box::new(fnty) }));
+    let fnty = AlterLifetimes.fold_type(Type::BareFn(fnty));
     let functions = ToTokensAll(&functions);
     let temp_bindings = &temp_bindings;
     let attrs = ToTokensAll(&attrs);
     let inputs_no_patterns = &inputs_no_patterns;
-    let function = quote! {
+    let function = quote_spanned! { Span::call_site() =>
         #attrs
         #vis #unsafety #abi
         fn #ident #generics(#(#inputs_no_patterns),*) -> #output
@@ -358,48 +365,42 @@ impl<'a, T: ToTokens> ToTokens for ToTokensAll<'a, T> {
 
 struct FulfillFeature<'a>(&'a Feature);
 
-impl<'a> Folder for FulfillFeature<'a> {
-    fn fold_mac(&mut self, mut mac: Mac) -> Mac {
+impl<'a> Fold for FulfillFeature<'a> {
+    fn fold_macro(&mut self, mut mac: Macro) -> Macro {
         if mac.path.global() {
             return mac
         }
         if mac.path.segments.len() != 1 {
             return mac
         }
-        if mac.path.segments.get(0).item().ident != "cfg" {
+        if mac.path.segments.first().unwrap().value().ident != "cfg" {
             return mac
         }
 
-        if mac.tokens.len() != 1 {
-            return mac
-        }
-
-        let stream = match mac.tokens[0].0.kind {
-            TokenNode::Group(Delimiter::Parenthesis, ref stream) => stream.clone(),
-            _ => return mac.clone(),
+        let mut iter = mac.tts.clone().into_iter();
+        let stream = match iter.next().map(|t| t.kind) {
+            Some(TokenNode::Group(Delimiter::Parenthesis, ref s)) => s.clone(),
+            _ => return mac,
         };
+        if iter.next().is_some() {
+            return mac
+        }
         match feature_from_stream(stream) {
             Some(ref s) if s == self.0.name => {}
             _ => return mac,
         }
 
         let tokens = quote! { (not(this_will_never_be_pased)) };
-        let stream = proc_macro2::TokenStream::from(tokens);
-        mac.tokens = stream.into_iter().map(|token| {
-            TokenTree(token)
-        }).collect();
+        mac.tts = proc_macro2::TokenStream::from(tokens);
         return mac
     }
 }
 
 struct AlterLifetimes;
 
-impl Folder for AlterLifetimes {
+impl Fold for AlterLifetimes {
     fn fold_lifetime(&mut self, lt: Lifetime) -> Lifetime {
-        Lifetime {
-            sym: Term::intern(&format!("{}_guh", lt)),
-            span: lt.span,
-        }
+        Lifetime::new(Term::intern(&format!("{}_guh", lt)), lt.span)
     }
 }
 

@@ -38,14 +38,14 @@ fn hex_encode<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> {
     }
 
     if cfg!(target_feature = "sse4.1") {
-        hex_encode_sse41(src, dst)
+        unsafe { hex_encode_sse41(src, dst) }
     } else {
         hex_encode_slow(src, dst)
     }
 }
 
 #[target_feature = "+sse4.1"]
-fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
+unsafe fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
     -> Result<&'a str, usize>
 {
     use stdsimd::simd::*;
@@ -83,9 +83,7 @@ fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
 
     drop(hex_encode_slow(src, &mut dst[i * 2..]));
 
-    unsafe {
-        return Ok(str::from_utf8_unchecked(&dst[..src.len() * 2 + i * 2]))
-    }
+    return Ok(str::from_utf8_unchecked(&dst[..src.len() * 2 + i * 2]))
 }
 
 fn hex_encode_slow<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> {
