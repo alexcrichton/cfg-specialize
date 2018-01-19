@@ -15,7 +15,7 @@ use quote::{Tokens, ToTokens};
 
 struct Feature {
     name: &'static str,
-    check: &'static str,
+    ident: &'static str,
     arch: &'static [&'static str],
 }
 
@@ -47,6 +47,11 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     let FnDecl { inputs, output, variadic, generics, .. } = { *decl };
     let ref inputs = inputs;
     let where_clause = &generics.where_clause;
+
+    if unsafety.is_none() {
+        // TODO: shouldn't require this
+        panic!("can only be applied to unsafe functions for now");
+    }
 
     if variadic.is_some() {
         panic!("the #[cfg_specialize] attribute cannot be applied to \
@@ -191,11 +196,11 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         // This'll be the name of the function, which is the same as the name
         // of the original function but suffixed with our feature name, e.g.
         // `foo_avx`.
-        let ident = Ident::from(&format!("__{}_{}", ident, feature.check)[..]);
+        let ident = Ident::from(&format!("__{}_{}", ident, feature.ident)[..]);
 
         // This is the string we'll pass to the `target_feature` attribute,
         // which enables the feature via `target_feature = "+feature"`
-        let feature_enable = LitStr::new(&format!("+{}", feature.name), Span::def_site());
+        let feature_enable = LitStr::new(&format!("{}", feature.name), Span::def_site());
 
         // Get rid of `cfg!(target_feature = ...)` by replacing it with `true`
         // where we can. Maybe one day this'll be fixed in the compiler and we
@@ -215,13 +220,13 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         // Package all that up in a function, and save off some of this
         // information.
         functions.push(quote! {
-            #[target_feature = #feature_enable]
+            #[target_feature(enable = #feature_enable)]
             #cfg
             #unsafety
             fn #ident #generics(#inputs) -> #output #where_clause
                 #body
         });
-        checker.push(Ident::from(&format!("check_{}", feature.check)[..]));
+        checker.push(feature_enable);
         checker_impl.push(ident);
         checker_cfg.push(cfg);
     }
@@ -254,14 +259,13 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
             // filled in later with the actual function we resolve to.
             static mut WHICH: #fnty = __dispatch;
 
-            return unsafe {
+            return {
                 let slot = &*(&WHICH as *const _ as *const AtomicUsize);
                 let function = slot.load(Ordering::Relaxed);
                 mem::transmute::<usize, #fnty>(function)(#(#temp_bindings),*)
             };
 
             fn __dispatch #generics (#(#inputs_no_patterns),*) -> #output {
-                extern crate cfg_specialize;
                 unsafe {
                     // Start out selecting our default fallback, and then
                     // after that go through each of the cfg directives we had
@@ -275,7 +279,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
                     #(
                         #checker_cfg
                         {
-                            if cfg_specialize::#checker() {
+                            if cfg_feature_enabled!(#checker) {
                                 _dest = #checker_impl as usize;
                             }
                         }
@@ -327,11 +331,11 @@ fn parse_cfg(cfg: TokenStream) -> &'static Feature {
     // TODO: implement this
     static X86: [&str; 2] = ["x86", "x86_64"];
     static FEATURES: &[Feature] = &[
-        Feature { name: "avx", check: "avx", arch: &X86 },
-        Feature { name: "avx2", check: "avx2", arch: &X86 },
-        Feature { name: "sse2", check: "sse2", arch: &X86 },
-        Feature { name: "ssse3", check: "ssse3", arch: &X86 },
-        Feature { name: "sse4.1", check: "sse41", arch: &X86 },
+        Feature { name: "avx", ident: "avx", arch: &X86 },
+        Feature { name: "avx2", ident: "avx2", arch: &X86 },
+        Feature { name: "sse2", ident: "sse2", arch: &X86 },
+        Feature { name: "ssse3", ident: "ssse3", arch: &X86 },
+        Feature { name: "sse4.1", ident: "sse41", arch: &X86 },
     ];
     let name = match feature_from_stream(cfg.into()) {
         Some(feature) => feature,
