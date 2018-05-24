@@ -7,20 +7,16 @@ extern crate proc_macro2;
 extern crate quote;
 extern crate syn;
 
-use proc_macro::TokenStream;
-use proc_macro2::{Delimiter, TokenNode, Term, Span};
+use proc_macro2::{TokenStream, Delimiter, TokenTree, Ident, Span};
 use syn::*;
 use syn::fold::Fold;
-use quote::{Tokens, ToTokens};
-
-struct Feature {
-    name: &'static str,
-    ident: &'static str,
-    arch: &'static [&'static str],
-}
+use quote::ToTokens;
 
 #[proc_macro_attribute]
-pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStream {
+pub fn cfg_specialize(
+    attribute: proc_macro::TokenStream,
+    function: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
     let cfgs = match get_cfgs(attribute) {
         Some(cfgs) => cfgs,
         None => {
@@ -123,7 +119,7 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
             // `a: B`
             FnArg::Captured(ArgCaptured { ref pat, ref ty, .. }) => {
                 patterns.push(pat);
-                let ident = Ident::from(format!("__arg_{}", i));
+                let ident = Ident::new(&format!("__arg_{}", i), Span::call_site());
                 temp_bindings.push(ident.clone());
                 let pat = PatIdent {
                     by_ref: None,
@@ -188,7 +184,6 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     let mut functions = Vec::new();
     let mut checker = Vec::new();
     let mut checker_impl = Vec::new();
-    let mut checker_cfg = Vec::new();
     for cfg in cfgs {
         // First up let's figure out what `Feature` this corresponds to.
         let feature = parse_cfg(cfg);
@@ -196,45 +191,30 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
         // This'll be the name of the function, which is the same as the name
         // of the original function but suffixed with our feature name, e.g.
         // `foo_avx`.
-        let ident = Ident::from(&format!("__{}_{}", ident, feature.ident)[..]);
-
-        // This is the string we'll pass to the `target_feature` attribute,
-        // which enables the feature via `target_feature = "+feature"`
-        let feature_enable = LitStr::new(&format!("{}", feature.name), Span::def_site());
+        let feature_ident = feature.replace(".", "_");
+        let ident = Ident::new(&format!("__{}_{}", ident, feature_ident), Span::call_site());
 
         // Get rid of `cfg!(target_feature = ...)` by replacing it with `true`
         // where we can. Maybe one day this'll be fixed in the compiler and we
         // won't have to do it!.
         let body = fold_body(*block.clone(), &feature);
 
-        // This #[cfg] directive will guard both the function and the dispatch
-        // function we generate below. That way we don't have to worry as much
-        // about cross compilation hopefully.
-        let arch = &feature.arch;
-        let cfg = quote! {
-            #[cfg(any(
-                #(target_arch = #arch),*
-            ))]
-        };
-
         // Package all that up in a function, and save off some of this
         // information.
         functions.push(quote! {
-            #[target_feature(enable = #feature_enable)]
-            #cfg
+            #[target_feature(enable = #feature)]
             #unsafety
             fn #ident #generics(#inputs) -> #output #where_clause
                 #body
         });
-        checker.push(feature_enable);
+        checker.push(feature);
         checker_impl.push(ident);
-        checker_cfg.push(cfg);
     }
 
     // Generate the default fallback which is the same as above, but without
     // any `#[target_feature]` attribute. We'll dispatch to this one if nothing
     // else hits.
-    let default = Ident::from(&format!("__{}_default", ident)[..]);
+    let default = Ident::new(&format!("__{}_default", ident), Span::call_site());
     functions.push(quote! {
         #unsafety
         fn #default #generics(#inputs) -> #output #where_clause
@@ -277,11 +257,8 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
                     // and delegate to it as well for our own function call.
                     let mut _dest = #default as usize;
                     #(
-                        #checker_cfg
-                        {
-                            if cfg_feature_enabled!(#checker) {
-                                _dest = #checker_impl as usize;
-                            }
+                        if is_x86_feature_detected!(#checker) {
+                            _dest = #checker_impl as usize;
                         }
                     )*
 
@@ -296,78 +273,52 @@ pub fn cfg_specialize(attribute: TokenStream, function: TokenStream) -> TokenStr
     };
 
     // println!("{}", function);
-    let function: proc_macro2::TokenStream = function.into();
+    let function: TokenStream = function.into();
     function.into()
 }
 
-fn get_cfgs(attribute: TokenStream) -> Option<Vec<TokenStream>> {
-    let attribute = proc_macro2::TokenStream::from(attribute);
-    let mut tokens = attribute.into_iter().collect::<Vec<_>>();
-    if tokens.len() != 1 {
-        return None
-    }
-    let stream = match tokens.remove(0).kind {
-        TokenNode::Group(Delimiter::Parenthesis, stream) => stream,
-        _ => return None
-    };
-
+fn get_cfgs(attribute: proc_macro::TokenStream) -> Option<Vec<TokenStream>> {
     let mut ret = Vec::new();
     let mut cur = Vec::new();
-    for token in stream {
-        match token.kind {
-            TokenNode::Op(',', _) => {
-                ret.push(TokenStream::from(cur.into_iter().collect::<proc_macro2::TokenStream>()));
+    for token in TokenStream::from(attribute) {
+        match token {
+            TokenTree::Punct(ref p) if p.as_char() == ',' => {
+                ret.push(TokenStream::from(cur.into_iter().collect::<TokenStream>()));
                 cur = Vec::new();
             }
             _ => cur.push(token),
         }
     }
-    ret.push(TokenStream::from(cur.into_iter().collect::<proc_macro2::TokenStream>()));
+    ret.push(TokenStream::from(cur.into_iter().collect::<TokenStream>()));
 
     Some(ret)
 }
 
-fn parse_cfg(cfg: TokenStream) -> &'static Feature {
-    // TODO: implement this
-    static X86: [&str; 2] = ["x86", "x86_64"];
-    static FEATURES: &[Feature] = &[
-        Feature { name: "avx", ident: "avx", arch: &X86 },
-        Feature { name: "avx2", ident: "avx2", arch: &X86 },
-        Feature { name: "sse2", ident: "sse2", arch: &X86 },
-        Feature { name: "ssse3", ident: "ssse3", arch: &X86 },
-        Feature { name: "sse4.1", ident: "sse41", arch: &X86 },
-    ];
-    let name = match feature_from_stream(cfg.into()) {
+fn parse_cfg(cfg: TokenStream) -> String {
+    match feature_from_stream(cfg.into()) {
         Some(feature) => feature,
         None => {
             panic!("cfg directives inside `#[cfg_specialize]` must be of the \
                     form `target_feature = \"foo\"`");
         }
-    };
-    for feature in FEATURES {
-        if feature.name == name {
-            return feature
-        }
     }
-
-    panic!("unknown target feature `{}` in `#[cfg_specialize]` directive", name);
 }
 
-fn fold_body(block: Block, feature: &Feature) -> Block {
+fn fold_body(block: Block, feature: &str) -> Block {
     FulfillFeature(feature).fold_block(block)
 }
 
 struct ToTokensAll<'a, T: 'a>(&'a [T]);
 
 impl<'a, T: ToTokens> ToTokens for ToTokensAll<'a, T> {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         for item in self.0 {
             item.to_tokens(tokens);
         }
     }
 }
 
-struct FulfillFeature<'a>(&'a Feature);
+struct FulfillFeature<'a>(&'a str);
 
 impl<'a> Fold for FulfillFeature<'a> {
     fn fold_macro(&mut self, mut mac: Macro) -> Macro {
@@ -382,20 +333,26 @@ impl<'a> Fold for FulfillFeature<'a> {
         }
 
         let mut iter = mac.tts.clone().into_iter();
-        let stream = match iter.next().map(|t| t.kind) {
-            Some(TokenNode::Group(Delimiter::Parenthesis, ref s)) => s.clone(),
+        let stream = match iter.next() {
+            Some(TokenTree::Group(g)) => {
+                if g.delimiter() == Delimiter::Parenthesis {
+                    g.stream()
+                } else {
+                    return mac
+                }
+            }
             _ => return mac,
         };
         if iter.next().is_some() {
             return mac
         }
         match feature_from_stream(stream) {
-            Some(ref s) if s == self.0.name => {}
+            Some(ref s) if s == self.0 => {}
             _ => return mac,
         }
 
         let tokens = quote! { (not(this_will_never_be_pased)) };
-        mac.tts = proc_macro2::TokenStream::from(tokens);
+        mac.tts = TokenStream::from(tokens);
         return mac
     }
 }
@@ -403,27 +360,28 @@ impl<'a> Fold for FulfillFeature<'a> {
 struct AlterLifetimes;
 
 impl Fold for AlterLifetimes {
-    fn fold_lifetime(&mut self, lt: Lifetime) -> Lifetime {
-        Lifetime::new(Term::intern(&format!("{}_guh", lt)), lt.span)
+    fn fold_lifetime(&mut self, mut lt: Lifetime) -> Lifetime {
+        lt.ident = Ident::new(&format!("{}_guh", lt.ident), lt.ident.span());
+        lt
     }
 }
 
-fn feature_from_stream(stream: proc_macro2::TokenStream) -> Option<String> {
+fn feature_from_stream(stream: TokenStream) -> Option<String> {
     let tokens = stream.into_iter().collect::<Vec<_>>();
     if tokens.len() != 3 {
         return None
     }
 
-    match tokens[0].kind {
-        TokenNode::Term(s) if s.as_str() == "target_feature" => {}
+    match &tokens[0] {
+        TokenTree::Ident(s) if s == "target_feature" => {}
         _ => return None,
     }
-    match tokens[1].kind {
-        TokenNode::Op('=', _) => {}
+    match &tokens[1] {
+        TokenTree::Punct(p) if p.as_char() == '=' => {}
         _ => return None,
     }
-    let mut literal = match tokens[2].kind {
-        TokenNode::Literal(ref l) => l.to_string(),
+    let mut literal = match &tokens[2] {
+        TokenTree::Literal(ref l) => l.to_string(),
         _ => return None,
     };
     // remove quotes

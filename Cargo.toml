@@ -7,6 +7,3 @@ authors = ["Alex Crichton <alex@alexcrichton.com>"]
 
 [dependencies]
 cfg-specialize-macros = { path = "cfg-specialize-macros" }
-
-[dev-dependencies]
-stdsimd = { git = 'https://github.com/rust-lang-nursery/stdsimd' }

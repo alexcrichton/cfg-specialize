@@ -1,13 +1,14 @@
-#![feature(proc_macro, cfg_target_feature, target_feature)]
+#![feature(proc_macro)]
 
 extern crate cfg_specialize;
-#[macro_use]
-extern crate stdsimd;
 
 use std::str;
 
 use cfg_specialize::cfg_specialize;
-use stdsimd::vendor::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
 
 #[cfg_specialize(target_feature = "ssse3")]
 unsafe fn test_ssse3() {
