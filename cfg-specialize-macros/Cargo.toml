@@ -8,5 +8,5 @@ proc-macro = true
 
 [dependencies]
 quote = "0.6"
-proc-macro2 = { version = "0.4", features = ["nightly"] }
+proc-macro2 = { version = "1.0", features = ["nightly"] }
 syn = { version = "0.14", features = ['full', 'fold'] }
