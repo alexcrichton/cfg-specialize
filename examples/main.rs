@@ -1,14 +1,10 @@
-#![feature(proc_macro)]
-
-extern crate cfg_specialize;
-
 use std::str;
 
 use cfg_specialize::cfg_specialize;
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
 
 #[cfg_specialize(target_feature = "ssse3")]
 unsafe fn test_ssse3() {
@@ -37,7 +33,7 @@ unsafe fn add_quickly(a: &[i32], b: &mut [i32]) {
 unsafe fn hex_encode<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> {
     let len = src.len().checked_mul(2).unwrap();
     if dst.len() < len {
-        return Err(len)
+        return Err(len);
     }
 
     if cfg!(target_feature = "sse4.1") {
@@ -48,9 +44,7 @@ unsafe fn hex_encode<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize
 }
 
 #[target_feature(enable = "sse4.1")]
-unsafe fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
-    -> Result<&'a str, usize>
-{
+unsafe fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> {
     let ascii_zero = _mm_set1_epi8(b'0' as i8);
     let nines = _mm_set1_epi8(9);
     let ascii_a = _mm_set1_epi8((b'a' - 9 - 1) as i8);
@@ -84,7 +78,7 @@ unsafe fn hex_encode_sse41<'a>(mut src: &[u8], dst: &'a mut [u8])
     let i = i as usize;
     drop(hex_encode_slow(src, &mut dst[i * 2..]));
 
-    return Ok(str::from_utf8_unchecked(&dst[..src.len() * 2 + i * 2]))
+    return Ok(str::from_utf8_unchecked(&dst[..src.len() * 2 + i * 2]));
 }
 
 fn hex_encode_slow<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> {
@@ -93,9 +87,7 @@ fn hex_encode_slow<'a>(src: &[u8], dst: &'a mut [u8]) -> Result<&'a str, usize> 
         slots[1] = hex((*byte >> 0) & 0xf);
     }
 
-    unsafe {
-        return Ok(str::from_utf8_unchecked(&dst[..src.len() * 2]))
-    }
+    unsafe { return Ok(str::from_utf8_unchecked(&dst[..src.len() * 2])) }
 
     fn hex(byte: u8) -> u8 {
         static TABLE: &[u8] = b"0123456789abcdef";

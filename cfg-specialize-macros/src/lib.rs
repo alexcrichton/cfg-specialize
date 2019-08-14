@@ -1,16 +1,10 @@
-#![feature(proc_macro)]
-#![recursion_limit = "128"]
-
 extern crate proc_macro;
-extern crate proc_macro2;
-#[macro_use]
-extern crate quote;
-extern crate syn;
 
-use proc_macro2::{TokenStream, Delimiter, TokenTree, Ident, Span};
-use syn::*;
-use syn::fold::Fold;
+use proc_macro2::{Delimiter, Ident, Span, TokenStream, TokenTree};
 use quote::ToTokens;
+use quote::{quote, quote_spanned};
+use syn::fold::Fold;
+use syn::*;
 
 #[proc_macro_attribute]
 pub fn cfg_specialize(
@@ -20,19 +14,17 @@ pub fn cfg_specialize(
     let cfgs = match get_cfgs(attribute) {
         Some(cfgs) => cfgs,
         None => {
-            panic!("the `cfg_specialize` attribute must be of the form: \
-                    #[cfg_specialize(...)]");
+            panic!(
+                "the `cfg_specialize` attribute must be of the form: \
+                 #[cfg_specialize(...)]"
+            );
         }
     };
 
     let ItemFn {
-        ident,
         vis,
-        unsafety,
-        constness,
-        abi,
         block,
-        decl,
+        sig,
         attrs,
         ..
     } = match syn::parse::<syn::Item>(function).unwrap() {
@@ -40,7 +32,17 @@ pub fn cfg_specialize(
         _ => panic!("#[cfg_specialize] can only be applied to functions"),
     };
 
-    let FnDecl { inputs, output, variadic, generics, .. } = { *decl };
+    let Signature {
+        abi,
+        ident,
+        unsafety,
+        constness,
+        inputs,
+        output,
+        variadic,
+        generics,
+        ..
+    } = sig;
     let ref inputs = inputs;
     let where_clause = &generics.where_clause;
 
@@ -50,24 +52,29 @@ pub fn cfg_specialize(
     }
 
     if variadic.is_some() {
-        panic!("the #[cfg_specialize] attribute cannot be applied to \
-                variadic functions");
+        panic!(
+            "the #[cfg_specialize] attribute cannot be applied to \
+             variadic functions"
+        );
     }
 
     if constness.is_some() {
-        panic!("the #[cfg_specialize] attribute cannot be applied to \
-                const functions");
+        panic!(
+            "the #[cfg_specialize] attribute cannot be applied to \
+             const functions"
+        );
     }
 
     let ref inputs = inputs;
     let output = match output {
         ReturnType::Type(_, t) => t,
-        ReturnType::Default => {
-            Box::new(TypeTuple {
+        ReturnType::Default => Box::new(
+            TypeTuple {
                 elems: Default::default(),
                 paren_token: Default::default(),
-            }.into())
-        }
+            }
+            .into(),
+        ),
     };
 
     // We've got to get a bit creative with our handling of arguments. For a
@@ -106,62 +113,61 @@ pub fn cfg_specialize(
         output: ReturnType::Type(Default::default(), output.clone()),
     };
     for (i, input) in inputs.iter().enumerate() {
-        if let FnArg::Captured(ref arg) = *input {
-            if let Pat::Ident(PatIdent { ref ident, ..}) = arg.pat {
-                if ident == "self" {
-                    panic!("the #[cfg_specialize] attribute cannot be applied \
-                            to methods, only free functions");
-                }
-            }
-        }
-
-        match *input {
+        match input {
             // `a: B`
-            FnArg::Captured(ArgCaptured { ref pat, ref ty, .. }) => {
+            syn::FnArg::Typed(PatType { pat, ty, .. }) => {
                 patterns.push(pat);
                 let ident = Ident::new(&format!("__arg_{}", i), Span::call_site());
                 temp_bindings.push(ident.clone());
                 let pat = PatIdent {
+                    attrs: Vec::new(),
                     by_ref: None,
                     mutability: None,
                     ident: ident,
                     subpat: None,
                 };
-                inputs_no_patterns.push(FnArg::Captured(ArgCaptured {
-                    pat: pat.into(),
+                inputs_no_patterns.push(FnArg::Typed(PatType {
+                    attrs: Vec::new(),
+                    pat: Box::new(pat.into()),
                     ty: ty.clone(),
                     colon_token: Default::default(),
                 }));
                 fnty.inputs.push(BareFnArg {
+                    attrs: Vec::new(),
                     name: None,
-                    ty: ty.clone(),
+                    ty: *ty.clone(),
                 });
             }
 
             _ => {
-                panic!("the #[cfg_specialize] attribute cannot be applied \
-                        to methods, only free functions");
+                panic!(
+                    "the #[cfg_specialize] attribute cannot be applied \
+                     to methods, only free functions"
+                );
             }
         }
     }
 
     // We use a `static` below for dispatching this function, and there's only
     // one static per function, so we can't support generics.
-    if generics.params.len() > 0 {
-    }
+    if generics.params.len() > 0 {}
     let mut lifetimes = punctuated::Punctuated::new();
     for param in generics.params.iter() {
         match *param {
-            GenericParam::Type(_) =>  {
-                panic!("the #[cfg_specialize] attribute cannot be applied to \
-                        generic functions");
+            GenericParam::Type(_) => {
+                panic!(
+                    "the #[cfg_specialize] attribute cannot be applied to \
+                     generic functions"
+                );
             }
             GenericParam::Lifetime(ref l) => {
                 lifetimes.push(l.clone());
             }
             GenericParam::Const(_) => {
-                panic!("the #[cfg_specialize] attribute cannot be applied to \
-                        functions with constant parameters");
+                panic!(
+                    "the #[cfg_specialize] attribute cannot be applied to \
+                     functions with constant parameters"
+                );
             }
         }
     }
@@ -298,8 +304,10 @@ fn parse_cfg(cfg: TokenStream) -> String {
     match feature_from_stream(cfg.into()) {
         Some(feature) => feature,
         None => {
-            panic!("cfg directives inside `#[cfg_specialize]` must be of the \
-                    form `target_feature = \"foo\"`");
+            panic!(
+                "cfg directives inside `#[cfg_specialize]` must be of the \
+                 form `target_feature = \"foo\"`"
+            );
         }
     }
 }
@@ -322,29 +330,29 @@ struct FulfillFeature<'a>(&'a str);
 
 impl<'a> Fold for FulfillFeature<'a> {
     fn fold_macro(&mut self, mut mac: Macro) -> Macro {
-        if mac.path.global() {
-            return mac
+        if mac.path.leading_colon.is_some() {
+            return mac;
         }
         if mac.path.segments.len() != 1 {
-            return mac
+            return mac;
         }
-        if mac.path.segments.first().unwrap().value().ident != "cfg" {
-            return mac
+        if mac.path.segments.first().unwrap().ident != "cfg" {
+            return mac;
         }
 
-        let mut iter = mac.tts.clone().into_iter();
+        let mut iter = mac.tokens.clone().into_iter();
         let stream = match iter.next() {
             Some(TokenTree::Group(g)) => {
                 if g.delimiter() == Delimiter::Parenthesis {
                     g.stream()
                 } else {
-                    return mac
+                    return mac;
                 }
             }
             _ => return mac,
         };
         if iter.next().is_some() {
-            return mac
+            return mac;
         }
         match feature_from_stream(stream) {
             Some(ref s) if s == self.0 => {}
@@ -352,8 +360,8 @@ impl<'a> Fold for FulfillFeature<'a> {
         }
 
         let tokens = quote! { (not(this_will_never_be_pased)) };
-        mac.tts = TokenStream::from(tokens);
-        return mac
+        mac.tokens = TokenStream::from(tokens);
+        return mac;
     }
 }
 
@@ -369,7 +377,7 @@ impl Fold for AlterLifetimes {
 fn feature_from_stream(stream: TokenStream) -> Option<String> {
     let tokens = stream.into_iter().collect::<Vec<_>>();
     if tokens.len() != 3 {
-        return None
+        return None;
     }
 
     match &tokens[0] {
